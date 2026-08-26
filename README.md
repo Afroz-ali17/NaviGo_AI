@@ -1,0 +1,2 @@
+# TravelBrain-Multi-Agentic-Travel-Planning-Agent
+TravelBrain is a multi-agent AI travel planning system that works together to create personalized, efficient, and complete travel plans based on the user’s preferences, budget, and schedule. It can coordinate different agents for destinations, transportation, accommodation, activities, and itinerary planning to deliver a seamless travel experience.
