@@ -19,6 +19,7 @@ dependencies = [
     "psycopg[binary]>=3.3.4",
     "pycountry>=26.2.16",
     "python-dotenv>=1.2.3",
+    "redis>=5.2.1",
     "requests>=2.34.2",
     "tavily>=1.1.0",
     "uvicorn>=0.52.4",

@@ -1,7 +1,10 @@
 /* ============================================================
-   TripMate AI — frontend
-   Talks to:  POST /api/travel  { message, thread_id }
-              GET  /health
+   TravelBrain AI — frontend
+   Talks to:  POST   /api/travel  { message, thread_id }
+              GET    /api/config          credential status
+              POST   /api/config          set session keys
+              DELETE /api/config          fall back to server .env
+              GET    /health
    ============================================================ */
 (function () {
   "use strict";
@@ -17,35 +20,43 @@
   var composer     = $("composer");
   var sendBtn      = $("sendBtn");
   var builder      = $("builder");
-  var sidebar      = $("sidebar");
-  var scrim        = $("sidebarScrim");
-  var tripList     = $("tripList");
-  var tripListEmpty= $("tripListEmpty");
-  var threadTitle  = $("threadTitle");
-  var threadMeta   = $("threadMeta");
-  var callsPill    = $("callsPill");
-  var callsCount   = $("callsCount");
   var toastEl      = $("toast");
+
+  var composerWrap = document.querySelector(".composer-wrap");
+
+  var statusBtn    = $("apiStatus");
+  var statusText   = statusBtn.querySelector(".status-text");
+
+  var setupGate    = $("setupGate");
+  var gateCreds    = $("gateCreds");
+  var gateSub      = $("gateSub");
+  var gateSave     = $("gateSave");
+
+  var settingsModal = $("settingsModal");
+  var settingsScrim = $("settingsScrim");
+  var credList      = $("credList");
+  var settingsSave  = $("settingsSave");
 
   /* ---------------- state ---------------- */
 
-  var STORE_KEY = "tripmate.trips.v1";
-  var THEME_KEY = "tripmate.theme";
+  var THEME_KEY = "travelbrain.theme";
 
-  var trips = [];        // [{ id, threadId, title, updatedAt, turns: [{ q, result }] }]
-  var activeId = null;
+  var threadId = null;   // LangGraph conversation thread for the current trip
   var busy = false;
+  var config = null;     // last /api/config payload
+  var savingConfig = false;
 
-  var AGENTS = [
-    { key: "flight",    label: "Flight agent",    hint: "Resolving airports, routes and fares" },
-    { key: "hotel",     label: "Hotel agent",     hint: "Searching stays near your area" },
-    { key: "weather",   label: "Weather agent",   hint: "Fetching current conditions and forecast" },
-    { key: "itinerary", label: "Itinerary agent", hint: "Drafting a day-by-day plan" },
-    { key: "final",     label: "Final agent",     hint: "Assembling your complete trip plan" }
+  /* One bar, not five rows. The backend answers once at the end, so these
+     weights are an estimate of how long each stage takes - the label is
+     indicative, not a live event feed. */
+  var PHASES = [
+    { label: "Fetching flights data",    weight: 0.22 },
+    { label: "Searching hotels",         weight: 0.18 },
+    { label: "Checking the weather",     weight: 0.14 },
+    { label: "Building your itinerary",  weight: 0.23 },
+    { label: "Writing your final plan",  weight: 0.23 }
   ];
 
-  // rough share of total runtime per agent, used only to animate the stepper
-  var AGENT_WEIGHTS = [0.22, 0.18, 0.14, 0.23, 0.23];
   var ESTIMATED_MS = 55000;
 
   /* ---------------- utils ---------------- */
@@ -81,7 +92,7 @@
     toastTimer = setTimeout(function () {
       toastEl.classList.remove("show");
       setTimeout(function () { toastEl.hidden = true; }, 250);
-    }, 2400);
+    }, 2800);
   }
 
   function scrollToEnd(smooth) {
@@ -90,56 +101,13 @@
     });
   }
 
-  function titleFrom(text) {
-    var t = String(text).replace(/\s+/g, " ").trim();
-    return t.length > 46 ? t.slice(0, 46).trim() + "…" : t;
-  }
-
-  function formatWhen(ts) {
-    var diff = Date.now() - ts;
-    var min = Math.floor(diff / 60000);
-    if (min < 1) return "just now";
-    if (min < 60) return min + "m ago";
-    var hr = Math.floor(min / 60);
-    if (hr < 24) return hr + "h ago";
-    return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
-
-  /* ---------------- storage ---------------- */
-
-  function loadTrips() {
-    try {
-      var raw = localStorage.getItem(STORE_KEY);
-      trips = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(trips)) trips = [];
-    } catch (e) {
-      trips = [];
-    }
-  }
-
-  function saveTrips() {
-    try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(trips.slice(0, 30)));
-    } catch (e) {
-      /* quota — not fatal, the session still works */
-    }
-  }
-
-  function currentTrip() {
-    for (var i = 0; i < trips.length; i++) {
-      if (trips[i].id === activeId) return trips[i];
-    }
-    return null;
-  }
-
   /* ---------------- theme ---------------- */
 
   function initTheme() {
     var stored = null;
     try { stored = localStorage.getItem(THEME_KEY); } catch (e) {}
     var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
-    var theme = stored || (prefersLight ? "light" : "dark");
-    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.setAttribute("data-theme", stored || (prefersLight ? "light" : "dark"));
   }
 
   $("themeToggle").addEventListener("click", function () {
@@ -148,99 +116,260 @@
     try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
   });
 
-  /* ---------------- sidebar (mobile) ---------------- */
+  /* ============================================================
+     credentials / settings
+     ============================================================ */
 
-  function openSidebar(open) {
-    sidebar.classList.toggle("open", open);
-    scrim.hidden = !open;
+  function isReady() {
+    return !!(config && config.ready);
   }
 
-  $("menuBtn").addEventListener("click", function () { openSidebar(true); });
-  $("sidebarClose").addEventListener("click", function () { openSidebar(false); });
-  scrim.addEventListener("click", function () { openSidebar(false); });
+  /* The hero, the setup gate and the composer lock are all driven by one
+     question: does the server have live credentials yet? */
+  function updateEmptyState() {
+    var hasMessages = messages.children.length > 0;
+    var ready = isReady();
 
-  /* ---------------- health ---------------- */
+    setupGate.hidden = ready || hasMessages;
+    hero.classList.toggle("is-hidden", !ready || hasMessages);
 
-  function checkHealth() {
-    var box = $("apiStatus");
-    var dotText = box.querySelector(".status-text");
+    composerWrap.classList.toggle("is-locked", !ready);
+    input.disabled = !ready || busy;
+    sendBtn.disabled = !ready || busy;
+  }
 
-    fetch("/health", { cache: "no-store" })
+  function applyConfig(data) {
+    config = data;
+
+    var missing = (data && data.missing) || [];
+
+    if (data && data.ready) {
+      statusBtn.setAttribute("data-state", "ok");
+      statusText.textContent = "API connected";
+      statusBtn.title = "All keys configured — open settings";
+    } else {
+      statusBtn.setAttribute("data-state", "setup");
+      statusText.textContent = "No Live API";
+      statusBtn.title = "No API keys configured — open settings";
+
+      var labels = missing.map(function (name) {
+        return (data.credentials[name] && data.credentials[name].label) || name;
+      });
+
+      gateSub.textContent = labels.length
+        ? "The server has no " + joinAnd(labels) + " configured, so the agents cannot run. Add " +
+          (labels.length === 1 ? "it" : "them") + " below to start planning."
+        : "The server has no API keys configured, so the agents cannot run.";
+
+      renderCreds(gateCreds);
+    }
+
+    if (!settingsModal.hidden) renderCreds(credList);
+
+    updateEmptyState();
+  }
+
+  function joinAnd(list) {
+    if (list.length <= 1) return list[0] || "";
+    return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
+  }
+
+  function markUnreachable() {
+    config = null;
+    statusBtn.setAttribute("data-state", "down");
+    statusText.textContent = "API unreachable";
+    statusBtn.title = "Could not reach the server";
+    updateEmptyState();
+  }
+
+  function refreshConfig() {
+    return fetch("/api/config", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
-      .then(function () {
-        box.setAttribute("data-state", "ok");
-        dotText.textContent = "API connected";
-      })
-      .catch(function () {
-        box.setAttribute("data-state", "down");
-        dotText.textContent = "API unreachable";
-      });
+      .then(applyConfig)
+      .catch(markUnreachable);
   }
 
-  /* ---------------- trip list ---------------- */
+  /* Renders one row per credential into the given container, showing where
+     the value comes from and letting the user override it for this session.
+     Used by both the centred gate and the settings modal, so lookups are
+     scoped to the container rather than done by global id. */
+  function renderCreds(container) {
+    container.innerHTML = "";
 
-  function renderTripList() {
-    tripList.innerHTML = "";
-    tripListEmpty.hidden = trips.length > 0;
-
-    trips.forEach(function (trip) {
-      var li = el("li");
-      var btn = el("button", "trip-item" + (trip.id === activeId ? " active" : ""));
-      btn.type = "button";
-      btn.title = trip.title;
-
-      btn.appendChild(el("span", null, trip.title));
-
-      var del = el("button", "trip-del", "×");
-      del.type = "button";
-      del.setAttribute("aria-label", "Delete trip");
-      del.addEventListener("click", function (e) {
-        e.stopPropagation();
-        trips = trips.filter(function (t) { return t.id !== trip.id; });
-        saveTrips();
-        if (activeId === trip.id) startNewTrip();
-        else renderTripList();
-      });
-
-      btn.appendChild(del);
-      btn.addEventListener("click", function () {
-        if (busy) { toast("Wait for the current plan to finish."); return; }
-        openTrip(trip.id);
-        openSidebar(false);
-      });
-
-      li.appendChild(btn);
-      tripList.appendChild(li);
-    });
-  }
-
-  /* ---------------- header ---------------- */
-
-  function updateHeader() {
-    var trip = currentTrip();
-
-    if (!trip) {
-      threadTitle.textContent = "New trip";
-      threadMeta.textContent = "Describe where you want to go — five agents take it from there.";
-      callsPill.hidden = true;
+    if (!config || !config.credentials) {
+      container.appendChild(el("p", "cred-loading", "Loading…"));
       return;
     }
 
-    threadTitle.textContent = trip.title;
+    Object.keys(config.credentials).forEach(function (name) {
+      var info = config.credentials[name];
 
-    var calls = 0;
-    trip.turns.forEach(function (t) { calls += (t.result && t.result.llm_calls) || 0; });
+      var row = el("div", "cred");
 
-    var bits = [trip.turns.length + (trip.turns.length === 1 ? " request" : " requests")];
-    if (trip.updatedAt) bits.push(formatWhen(trip.updatedAt));
-    if (trip.threadId) bits.push("thread " + String(trip.threadId).slice(-6));
-    threadMeta.textContent = bits.join(" · ");
+      var head = el("div", "cred-head");
+      head.appendChild(el("label", "cred-label", info.label));
 
-    callsPill.hidden = calls === 0;
-    callsCount.textContent = calls;
+      var badgeText = info.source === "env" ? "From server .env"
+                    : info.source === "session" ? "Set for this session"
+                    : "Not configured";
+
+      head.appendChild(el("span", "badge badge-" + (info.source || "missing"), badgeText));
+      row.appendChild(head);
+
+      row.appendChild(el("p", "cred-hint", info.hint));
+
+      var field = el("div", "cred-field");
+      var box = el("input", "cred-input");
+      box.type = "password";
+      box.placeholder = info.configured ? "•••••••• (leave blank to keep)" : info.placeholder;
+      box.autocomplete = "off";
+      box.spellcheck = false;
+      box.setAttribute("data-cred", name);
+      field.appendChild(box);
+
+      var reveal = el("button", "icon-btn sm");
+      reveal.type = "button";
+      reveal.title = "Show / hide";
+      reveal.setAttribute("aria-label", "Show or hide value");
+      reveal.appendChild(icon("M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"));
+      reveal.addEventListener("click", function () {
+        box.type = box.type === "password" ? "text" : "password";
+      });
+      field.appendChild(reveal);
+
+      row.appendChild(field);
+
+      var err = el("p", "cred-error");
+      err.setAttribute("data-error-for", name);
+      err.hidden = true;
+      row.appendChild(err);
+
+      container.appendChild(row);
+    });
   }
 
-  /* ---------------- message rendering ---------------- */
+  var FIELD_BY_NAME = {
+    GROQ_API_KEY: "groq_api_key",
+    DATABASE_URL: "database_url"
+  };
+
+  var NAME_BY_FIELD = {
+    groq_api_key: "GROQ_API_KEY",
+    database_url: "DATABASE_URL"
+  };
+
+  function openSettings() {
+    settingsModal.hidden = false;
+    settingsScrim.hidden = false;
+    renderCreds(credList);
+    refreshConfig();
+
+    var first = credList.querySelector(".cred-input");
+    if (first) first.focus();
+  }
+
+  function closeSettings() {
+    settingsModal.hidden = true;
+    settingsScrim.hidden = true;
+  }
+
+  function setSavingConfig(state, button) {
+    savingConfig = state;
+    [settingsSave, gateSave].forEach(function (b) { b.disabled = state; });
+    if (button) button.classList.toggle("is-busy", state);
+  }
+
+  function saveCredentials(container, button) {
+    if (savingConfig) return;
+
+    var payload = {};
+    var anything = false;
+
+    container.querySelectorAll(".cred-input").forEach(function (box) {
+      var value = box.value.trim();
+      if (!value) return;
+      anything = true;
+      payload[FIELD_BY_NAME[box.getAttribute("data-cred")]] = value;
+    });
+
+    container.querySelectorAll(".cred-error").forEach(function (n) { n.hidden = true; });
+
+    if (!anything) {
+      toast("Enter a key first.");
+      var empty = container.querySelector(".cred-input");
+      if (empty) empty.focus();
+      return;
+    }
+
+    setSavingConfig(true, button);
+
+    fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+      .then(function (response) {
+        return response.json().then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (out) {
+        if (!out.ok || out.data.success === false) {
+          var errors = out.data.errors || {};
+          var shown = 0;
+
+          Object.keys(errors).forEach(function (field) {
+            var node = container.querySelector('[data-error-for="' + NAME_BY_FIELD[field] + '"]');
+            if (node) {
+              node.textContent = errors[field];
+              node.hidden = false;
+              shown++;
+            }
+          });
+
+          toast(shown ? "Check the highlighted field." : (out.data.error || "Could not save."));
+          return;
+        }
+
+        applyConfig(out.data);
+        toast(out.data.ready ? "Connected." : "Saved — one key still missing.");
+      })
+      .catch(function () {
+        toast("Could not reach the server.");
+      })
+      .then(function () {
+        setSavingConfig(false, button);
+      });
+  }
+
+  function resetSettings() {
+    if (savingConfig) return;
+    setSavingConfig(true, settingsSave);
+
+    fetch("/api/config", { method: "DELETE" })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        applyConfig(data);
+        renderCreds(credList);
+        toast("Session keys cleared.");
+      })
+      .catch(function () { toast("Could not reach the server."); })
+      .then(function () { setSavingConfig(false, settingsSave); });
+  }
+
+  $("settingsBtn").addEventListener("click", openSettings);
+  statusBtn.addEventListener("click", openSettings);
+  $("settingsClose").addEventListener("click", closeSettings);
+  settingsScrim.addEventListener("click", closeSettings);
+  settingsSave.addEventListener("click", function () { saveCredentials(credList, settingsSave); });
+  gateSave.addEventListener("click", function () { saveCredentials(gateCreds, gateSave); });
+  $("settingsReset").addEventListener("click", resetSettings);
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !settingsModal.hidden) closeSettings();
+  });
+
+  /* ============================================================
+     message rendering
+     ============================================================ */
 
   function renderUser(text) {
     var wrap = el("div", "msg msg-user");
@@ -304,19 +433,7 @@
   }
 
   function plainTextOf(result) {
-    var out = ["# " + (result.__query || "Trip plan"), "", toText(result.answer)];
-
-    [
-      ["Itinerary", result.itinerary],
-      ["Flights",   result.flight_results],
-      ["Hotels",    result.hotel_results],
-      ["Weather",   result.weather_results]
-    ].forEach(function (pair) {
-      var body = toText(pair[1]).trim();
-      if (body) out.push("", "---", "", "## " + pair[0], "", body);
-    });
-
-    return out.join("\n");
+    return ["# " + (result.__query || "Trip plan"), "", toText(result.answer)].join("\n");
   }
 
   function renderResult(result) {
@@ -329,9 +446,8 @@
     head.appendChild(avatar);
 
     var titleBox = el("div", "card-title");
-    titleBox.appendChild(el("strong", null, "TripMate AI"));
-    titleBox.appendChild(el("small", null,
-      "Plan ready" + (result.llm_calls ? " · " + result.llm_calls + " LLM calls" : "")));
+    titleBox.appendChild(el("strong", null, "TravelBrain AI"));
+    titleBox.appendChild(el("small", null, "Plan ready"));
     head.appendChild(titleBox);
 
     var tools = el("div", "card-tools");
@@ -353,7 +469,7 @@
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
-      a.download = "tripmate-plan.md";
+      a.download = "travelbrain-plan.md";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -367,43 +483,12 @@
     head.appendChild(tools);
     card.appendChild(head);
 
-    /* tabs */
-    var sections = [
-      { id: "plan",      label: "Plan",      dot: "dot-final",     content: result.answer,          empty: "The agent returned an empty response." },
-      { id: "itinerary", label: "Itinerary", dot: "dot-itinerary", content: result.itinerary,       empty: "No itinerary was generated." },
-      { id: "flights",   label: "Flights",   dot: "dot-flight",    content: result.flight_results,  empty: "No flight data returned." },
-      { id: "hotels",    label: "Hotels",    dot: "dot-hotel",     content: result.hotel_results,   empty: "No hotel data returned." },
-      { id: "weather",   label: "Weather",   dot: "dot-weather",   content: result.weather_results, empty: "No weather data returned. Add \"weather_results\" to the /api/travel response to show it here." }
-    ];
-
-    var tabsBar = el("div", "tabs");
-    tabsBar.setAttribute("role", "tablist");
-    var panels = [];
-
-    sections.forEach(function (section, index) {
-      var tab = el("button", "tab" + (index === 0 ? " active" : ""));
-      tab.type = "button";
-      tab.setAttribute("role", "tab");
-      tab.appendChild(el("span", "dot " + section.dot));
-      tab.appendChild(el("span", null, section.label));
-
-      var panel = el("div", "panel" + (index === 0 ? " active" : ""));
-      panel.setAttribute("role", "tabpanel");
-      panel.appendChild(mdBlock(section.content, section.empty));
-
-      tab.addEventListener("click", function () {
-        tabsBar.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("active"); });
-        panels.forEach(function (p) { p.classList.remove("active"); });
-        tab.classList.add("active");
-        panel.classList.add("active");
-      });
-
-      tabsBar.appendChild(tab);
-      panels.push(panel);
-    });
-
-    card.appendChild(tabsBar);
-    panels.forEach(function (p) { card.appendChild(p); });
+    /* one message: the final assembled plan. The per-agent flight, hotel,
+       weather and itinerary payloads still come back in the response and
+       feed this answer, they are just not surfaced as separate tabs. */
+    var body = el("div", "card-body");
+    body.appendChild(mdBlock(result.answer, "The agent returned an empty response."));
+    card.appendChild(body);
 
     var wrap = el("div", "msg");
     wrap.appendChild(card);
@@ -423,11 +508,15 @@
       },
       network: {
         title: "Could not reach the server",
-        detail: "The request never completed. Check that uvicorn is still running."
+        detail: "The request never completed. Check that the server is still running."
       },
       render: {
         title: "The plan came back, but could not be displayed",
         detail: "The agents returned data in an unexpected shape. This is a frontend issue, not an agent failure."
+      },
+      setup: {
+        title: "Missing credentials",
+        detail: "Add the required keys in Settings, or set them in the server's .env file."
       }
     }[kind || "server"];
 
@@ -435,8 +524,15 @@
     textBox.appendChild(el("strong", null, copy.title));
     textBox.appendChild(el("p", null, copy.detail));
     textBox.appendChild(el("code", null, message));
-    body.appendChild(textBox);
 
+    if (kind === "setup") {
+      var open = el("button", "btn btn-soft btn-sm", "Open settings");
+      open.type = "button";
+      open.addEventListener("click", openSettings);
+      textBox.appendChild(open);
+    }
+
+    body.appendChild(textBox);
     card.appendChild(body);
 
     var wrap = el("div", "msg");
@@ -448,75 +544,64 @@
   /* ---------------- pipeline (loading state) ---------------- */
 
   function renderPipeline() {
-    var card = el("article", "card");
-    var box = el("div", "pipeline");
+    var card = el("article", "card progress-card");
 
-    var head = el("div", "pipeline-head");
-    head.appendChild(el("strong", null, "Agents are working"));
+    var head = el("div", "progress-head");
+    var label = el("span", "progress-label", PHASES[0].label);
+    var meta = el("span", "progress-meta");
+    var pct = el("b", null, "0%");
+    meta.appendChild(pct);
+    meta.appendChild(el("span", "progress-sep", "·"));
     var timer = el("span", null, "0s");
-    head.appendChild(timer);
-    box.appendChild(head);
-
-    var steps = el("div", "steps");
-    var nodes = AGENTS.map(function (agent) {
-      var row = el("div", "step");
-      row.appendChild(el("div", "step-icon"));
-      var label = el("div", "step-label");
-      label.appendChild(el("span", null, agent.label));
-      row.appendChild(label);
-      steps.appendChild(row);
-      return row;
-    });
-    box.appendChild(steps);
+    meta.appendChild(timer);
+    head.appendChild(label);
+    head.appendChild(meta);
+    card.appendChild(head);
 
     var track = el("div", "progress-track");
     var fill = el("div", "progress-fill");
     track.appendChild(fill);
-    box.appendChild(track);
+    card.appendChild(track);
 
-    card.appendChild(box);
     var wrap = el("div", "msg");
     wrap.appendChild(card);
     messages.appendChild(wrap);
 
-    /* The backend returns one response at the end, so this stepper is an
-       estimate of progress, not a live feed of agent events. */
     var started = Date.now();
-    var current = -1;
+    var currentPhase = -1;
 
-    function advanceTo(index) {
-      if (index === current) return;
-      current = index;
-      nodes.forEach(function (node, i) {
-        node.classList.toggle("is-done", i < index);
-        node.classList.toggle("is-active", i === index);
-      });
-      if (AGENTS[index]) head.querySelector("strong").textContent = AGENTS[index].hint;
-    }
-
-    advanceTo(0);
-
-    var tick = setInterval(function () {
+    function tick() {
       var elapsed = Date.now() - started;
+
+      // creep towards 97% so the bar never claims to be finished early
+      var ratio = Math.min(elapsed / ESTIMATED_MS, 0.97);
+
+      fill.style.width = (ratio * 100).toFixed(1) + "%";
+      pct.textContent = Math.round(ratio * 100) + "%";
       timer.textContent = Math.floor(elapsed / 1000) + "s";
 
-      var ratio = Math.min(elapsed / ESTIMATED_MS, 0.97);
-      fill.style.width = (ratio * 100).toFixed(1) + "%";
-
       var acc = 0;
-      var index = AGENTS.length - 1;
-      for (var i = 0; i < AGENT_WEIGHTS.length; i++) {
-        acc += AGENT_WEIGHTS[i];
+      var index = PHASES.length - 1;
+      for (var i = 0; i < PHASES.length; i++) {
+        acc += PHASES[i].weight;
         if (ratio < acc) { index = i; break; }
       }
-      advanceTo(index);
-    }, 500);
+
+      if (index !== currentPhase) {
+        currentPhase = index;
+        label.textContent = PHASES[index].label;
+      }
+    }
+
+    tick();
+    var interval = setInterval(tick, 250);
 
     return {
       node: wrap,
       finish: function () {
-        clearInterval(tick);
+        clearInterval(interval);
         fill.style.width = "100%";
+        pct.textContent = "100%";
       }
     };
   }
@@ -525,9 +610,8 @@
 
   function setBusy(state) {
     busy = state;
-    sendBtn.disabled = state;
     sendBtn.classList.toggle("is-busy", state);
-    input.disabled = state;
+    updateEmptyState();
   }
 
   function send(text) {
@@ -536,33 +620,25 @@
     var message = String(text == null ? input.value : text).trim();
     if (!message) return;
 
-    hero.classList.add("is-hidden");
+    if (!isReady()) {
+      toast("No live API — add your keys first.");
+      updateEmptyState();
+      return;
+    }
+
     input.value = "";
     autosize();
     setBusy(true);
 
-    var trip = currentTrip();
-    if (!trip) {
-      trip = {
-        id: "t_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-        threadId: null,
-        title: titleFrom(message),
-        updatedAt: Date.now(),
-        turns: []
-      };
-      trips.unshift(trip);
-      activeId = trip.id;
-      renderTripList();
-    }
-
     renderUser(message);
+    updateEmptyState();
     var pipeline = renderPipeline();
     scrollToEnd(true);
 
     fetch("/api/travel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message, thread_id: trip.threadId })
+      body: JSON.stringify({ message: message, thread_id: threadId })
     })
       .catch(function (e) {
         e.__kind = "network";
@@ -573,7 +649,10 @@
           .catch(function () { throw new Error("Server returned a non-JSON response (HTTP " + response.status + ")"); })
           .then(function (data) {
             if (!response.ok || data.success === false) {
-              throw new Error(data.error || ("Request failed with HTTP " + response.status));
+              var err = new Error(data.error || ("Request failed with HTTP " + response.status));
+              // 428 Precondition Required = a credential is missing.
+              if (response.status === 428) err.__kind = "setup";
+              throw err;
             }
             return data;
           });
@@ -583,10 +662,7 @@
         pipeline.node.remove();
 
         data.__query = message;
-        trip.threadId = data.thread_id || trip.threadId;
-        trip.updatedAt = Date.now();
-        trip.turns.push({ q: message, result: data });
-        saveTrips();
+        threadId = data.thread_id || threadId;
 
         // A rendering bug here must not be reported as an agent failure.
         try {
@@ -596,8 +672,6 @@
           renderError(e.message || String(e), "render");
         }
 
-        renderTripList();
-        updateHeader();
         scrollToEnd(true);
       })
       .catch(function (err) {
@@ -605,7 +679,7 @@
         if (pipeline.node.parentNode) pipeline.node.remove();
         renderError(err.message || String(err), err.__kind || "server");
         scrollToEnd(true);
-        checkHealth();
+        refreshConfig();
       })
       .then(function () {
         setBusy(false);
@@ -616,37 +690,14 @@
   /* ---------------- trips ---------------- */
 
   function startNewTrip() {
-    activeId = null;
-    messages.innerHTML = "";
-    hero.classList.remove("is-hidden");
-    renderTripList();
-    updateHeader();
-    input.focus();
-  }
-
-  function openTrip(id) {
-    activeId = id;
-    var trip = currentTrip();
-    messages.innerHTML = "";
-
-    if (!trip) return startNewTrip();
-
-    hero.classList.add("is-hidden");
-    trip.turns.forEach(function (turn) {
-      renderUser(turn.q);
-      renderResult(turn.result);
-    });
-
-    renderTripList();
-    updateHeader();
-    scrollToEnd(false);
-  }
-
-  $("newTripBtn").addEventListener("click", function () {
     if (busy) { toast("Wait for the current plan to finish."); return; }
-    startNewTrip();
-    openSidebar(false);
-  });
+    threadId = null;
+    messages.innerHTML = "";
+    updateEmptyState();
+    if (isReady()) input.focus();
+  }
+
+  $("newTripBtn").addEventListener("click", startNewTrip);
 
   /* ---------------- composer ---------------- */
 
@@ -742,11 +793,10 @@
   /* ---------------- boot ---------------- */
 
   initTheme();
-  loadTrips();
-  renderTripList();
-  updateHeader();
-  checkHealth();
-  setInterval(checkHealth, 60000);
+  updateEmptyState();
+  refreshConfig().then(function () {
+    if (isReady()) input.focus();
+  });
+  setInterval(refreshConfig, 60000);
   autosize();
-  input.focus();
 })();

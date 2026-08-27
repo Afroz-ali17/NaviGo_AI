@@ -1,0 +1,89 @@
+# Render Blueprint — the FastAPI backend, Redis cache, and Postgres.
+#
+# Deploy:  Render dashboard -> New -> Blueprint -> pick this repo.
+#
+# The backend has to run here rather than on a serverless platform: it spawns
+# the AviationStack and Weather MCP servers as stdio child processes, holds a
+# long-lived psycopg connection, and answers in 30-60s.
+
+services:
+  # ---------------------------------------------------------------
+  # FastAPI backend (built from the repo Dockerfile)
+  # ---------------------------------------------------------------
+  - type: web
+    name: travelbrain-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: singapore
+    # The free plan sleeps after 15 minutes idle and cold-starts in ~50s.
+    # Combined with a 30-60s agent run that can exceed Vercel's 120s proxy
+    # timeout on the first request, so prefer starter for anything real.
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      # Render injects PORT; the Dockerfile CMD already binds ${HOST}:${PORT}.
+      - key: HOST
+        value: 0.0.0.0
+
+      # Set in the dashboard - never committed.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: AVIATIONSTACK_API_KEY
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false
+
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+
+      # Point at your EXISTING Render Postgres (Internal Database URL).
+      # To have the blueprint create a new one instead, delete this entry and
+      # uncomment both the `fromDatabase` block and the `databases:` section.
+      - key: DATABASE_URL
+        sync: false
+      # - key: DATABASE_URL
+      #   fromDatabase:
+      #     name: travelbrain-db
+      #     property: connectionString
+
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: travelbrain-cache
+          property: connectionString
+
+      - key: CACHE_ENABLED
+        value: "true"
+
+      # Only needed if the frontend calls this service cross-origin. With the
+      # Vercel rewrite in vercel.json the browser sees one origin, so leave
+      # this unset. If you do set it, cookies switch to SameSite=None; Secure.
+      # - key: CORS_ORIGINS
+      #   value: https://travelbrain.vercel.app
+
+  # ---------------------------------------------------------------
+  # Redis cache (Render Key Value)
+  # ---------------------------------------------------------------
+  - type: keyvalue
+    name: travelbrain-cache
+    region: singapore
+    plan: free
+    # Pure cache - LangGraph checkpoints live in Postgres - so evicting under
+    # memory pressure is safe.
+    maxmemoryPolicy: allkeys-lru
+    # Reachable only from services inside this Render account.
+    ipAllowList: []
+
+# ---------------------------------------------------------------
+# Uncomment to let the blueprint create a Postgres instead of reusing yours.
+# ---------------------------------------------------------------
+# databases:
+#   - name: travelbrain-db
+#     region: singapore
+#     plan: basic-256mb
+#     postgresMajorVersion: "17"
