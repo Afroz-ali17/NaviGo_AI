@@ -60,14 +60,21 @@ AIRLINE_DATA_CHAR_LIMIT = int(os.getenv("AIRLINE_DATA_CHAR_LIMIT", "3000"))
 # Redis cache
 # =========================
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# No default. An unset REDIS_URL means "no cache", which is the safe answer
+# on a hosted service - guessing localhost there would point at nothing and
+# make every request pay a failed connection.
+REDIS_URL = os.getenv("REDIS_URL") or None
 
-# Set CACHE_ENABLED=false to bypass Redis entirely without changing code.
-CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() not in (
-    "false",
-    "0",
-    "no",
+# Explicit off switch. Caching also requires REDIS_URL to be set at all.
+CACHE_ENABLED = (
+    os.getenv("CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
+    and REDIS_URL is not None
 )
+
+# How long to wait before retrying a Redis connection that failed. Without
+# this a single blip - a restart, a deploy - would disable the cache for the
+# whole life of the process.
+CACHE_RECONNECT_SECONDS = int(os.getenv("CACHE_RECONNECT_SECONDS", "60"))
 
 CACHE_KEY_PREFIX = os.getenv("CACHE_KEY_PREFIX", "travelbrain")
 

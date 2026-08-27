@@ -16,6 +16,7 @@ import functools
 import hashlib
 import json
 import logging
+import time
 from typing import Any, Callable, Optional
 
 import redis
@@ -23,6 +24,7 @@ import redis
 from src.config.settings import (
     CACHE_ENABLED,
     CACHE_KEY_PREFIX,
+    CACHE_RECONNECT_SECONDS,
     REDIS_URL,
 )
 
@@ -30,21 +32,30 @@ logger = logging.getLogger(__name__)
 
 
 _client: Optional[redis.Redis] = None
-_client_initialised = False
+_last_failure: Optional[float] = None
 
 
 def get_client() -> Optional[redis.Redis]:
-    """Return a shared Redis client, or None when caching is unavailable."""
+    """
+    Return a shared Redis client, or None when caching is unavailable.
 
-    global _client, _client_initialised
+    A failed connection is retried after CACHE_RECONNECT_SECONDS rather than
+    disabling the cache for the life of the process, so a Redis restart or a
+    deploy blip heals on its own.
+    """
+
+    global _client, _last_failure
 
     if not CACHE_ENABLED:
         return None
 
-    if _client_initialised:
+    if _client is not None:
         return _client
 
-    _client_initialised = True
+    now = time.monotonic()
+
+    if _last_failure is not None and now - _last_failure < CACHE_RECONNECT_SECONDS:
+        return None
 
     try:
         client = redis.Redis.from_url(
@@ -56,25 +67,69 @@ def get_client() -> Optional[redis.Redis]:
         client.ping()
 
         _client = client
-        logger.info("Redis cache connected: %s", REDIS_URL)
+        _last_failure = None
+        logger.info("Redis cache connected: %s", _safe_url(REDIS_URL))
 
     except Exception as error:
         _client = None
+        _last_failure = now
         logger.warning(
-            "Redis cache unavailable (%s). Continuing without cache.",
+            "Redis cache unavailable (%s). Continuing without cache; "
+            "will retry in %ss.",
             error,
+            CACHE_RECONNECT_SECONDS,
         )
 
     return _client
 
 
-def reset_client() -> None:
-    """Force the next call to re-connect. Used by tests."""
+def _safe_url(url: str) -> str:
+    """Strip any password before a connection string reaches the logs."""
 
-    global _client, _client_initialised
+    if "@" not in url:
+        return url
+
+    scheme, _, rest = url.partition("://")
+    _, _, host = rest.rpartition("@")
+
+    return f"{scheme}://***@{host}"
+
+
+def drop_client() -> None:
+    """Discard the client so the next call reconnects. Used after hard errors."""
+
+    global _client, _last_failure
 
     _client = None
-    _client_initialised = False
+    _last_failure = time.monotonic()
+
+
+def reset_client() -> None:
+    """Force an immediate reconnect attempt. Used by tests."""
+
+    global _client, _last_failure
+
+    _client = None
+    _last_failure = None
+
+
+def status() -> dict:
+    """Human-readable cache state, for /health and diagnostics."""
+
+    if not CACHE_ENABLED:
+        return {
+            "enabled": False,
+            "connected": False,
+            "reason": "REDIS_URL not set" if REDIS_URL is None else "CACHE_ENABLED=false",
+        }
+
+    connected = get_client() is not None
+
+    return {
+        "enabled": True,
+        "connected": connected,
+        "url": _safe_url(REDIS_URL),
+    }
 
 
 def build_key(prefix: str, args: tuple, kwargs: dict) -> str:
@@ -101,6 +156,10 @@ def _read(key: str) -> tuple[bool, Any]:
 
     try:
         payload = client.get(key)
+    except (redis.ConnectionError, redis.TimeoutError) as error:
+        logger.warning("Redis read failed for %s: %s", key, error)
+        drop_client()
+        return False, None
     except Exception as error:
         logger.warning("Redis read failed for %s: %s", key, error)
         return False, None
@@ -129,6 +188,9 @@ def _write(key: str, value: Any, ttl: int) -> Any:
     if client is not None:
         try:
             client.setex(key, ttl, payload)
+        except (redis.ConnectionError, redis.TimeoutError) as error:
+            logger.warning("Redis write failed for %s: %s", key, error)
+            drop_client()
         except Exception as error:
             logger.warning("Redis write failed for %s: %s", key, error)
 

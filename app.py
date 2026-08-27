@@ -19,6 +19,7 @@ from src.api.sessions import (
     store_credentials,
 )
 from src.api.validation import check_database_url, check_groq_api_key
+from src.clients import cache
 from src.config.session import (
     MissingCredentialsError,
     credential_status,
@@ -242,7 +243,14 @@ async def travel_planner(request: Request, request_data: TravelRequest):
 
 
 
-@app.get("/health")
+@app.head("/", include_in_schema=False)
+async def home_head():
+    """Hosting platforms probe with HEAD to detect an open port."""
+
+    return Response(status_code=200)
+
+
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check(request: Request):
     credentials = get_credentials_for(_session_id(request))
 
@@ -254,6 +262,7 @@ async def health_check(request: Request):
         "message": "AI Travel Planner API is running",
         "ready": status["ready"],
         "missing": status["missing"],
+        "cache": cache.status(),
     }
 
 

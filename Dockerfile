@@ -77,6 +77,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl --fail --silent http://127.0.0.1:${PORT}/health || exit 1
 
-# Bind 0.0.0.0 explicitly - app.py's own __main__ block binds 127.0.0.1,
-# which would be unreachable from outside the container.
-CMD ["sh", "-c", "exec uvicorn app:app --host ${HOST} --port ${PORT}"]
+# Always bind 0.0.0.0. Inside a container that is the only correct answer, and
+# hard-coding it means a stray HOST=127.0.0.1 in the environment - copied from
+# a local .env into a hosting dashboard, say - cannot make the service
+# unreachable. PORT stays configurable because hosts assign it (Render sends
+# 10000 by default).
+CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
