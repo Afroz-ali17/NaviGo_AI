@@ -102,7 +102,7 @@ NaviGo is engineered using **LangGraph** graph state orchestration:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner.git
+   git clone /https://github.com/Afroz-ali17/NaviGo_AI.git
    cd TravelBrain-Multi-Agent-AI-Travel-Planner
    ```
 
