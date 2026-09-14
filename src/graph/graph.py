@@ -8,6 +8,7 @@ from src.agents.final_agent import final_agent
 from src.agents.flight_agent import flight_agent
 from src.agents.hotel_agent import hotel_agent
 from src.agents.itinerary_agent import itinerary_agent
+from src.agents.train_agent import train_agent
 from src.agents.weather_agent import weather_agent
 from src.clients.checkpointer import get_checkpointer
 from src.config.session import require, resolve_database_url
@@ -20,13 +21,15 @@ def build_graph() -> StateGraph:
     graph = StateGraph(TravelState)
 
     graph.add_node("flight_agent", flight_agent)
+    graph.add_node("train_agent", train_agent)
     graph.add_node("hotel_agent", hotel_agent)
     graph.add_node("weather_agent", weather_agent)
     graph.add_node("itinerary_agent", itinerary_agent)
     graph.add_node("final_agent", final_agent)
 
     graph.add_edge(START, "flight_agent")
-    graph.add_edge("flight_agent", "hotel_agent")
+    graph.add_edge("flight_agent", "train_agent")
+    graph.add_edge("train_agent", "hotel_agent")
     graph.add_edge("hotel_agent", "weather_agent")
     graph.add_edge("weather_agent", "itinerary_agent")
     graph.add_edge("itinerary_agent", "final_agent")

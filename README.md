@@ -1,241 +1,175 @@
-<h1 align="center">TravelBrain</h1>
+<h1 align="center">NaviGo AI — Multi-Agent Travel Planner</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-in%20progress-f59e0b.svg" alt="Status">
+  <img src="https://img.shields.io/badge/status-active-success.svg" alt="Status">
   <a href="https://github.com/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner/issues"><img src="https://img.shields.io/github/issues/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner.svg" alt="GitHub Issues"></a>
-  <a href="https://github.com/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner/pulls"><img src="https://img.shields.io/github/issues-pr/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner.svg" alt="GitHub Pull Requests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License"></a>
 </p>
 
 ---
 
-<p align="center"> A multi-agent AI travel planner. Describe the trip you want in
-    plain English and get back flights, hotels, weather and a day-by-day
-    itinerary — researched for you in about a minute.
-    <br>
+<p align="center">
+  A state-of-the-art, multi-agent AI travel planning platform built from scratch with <strong>LangGraph</strong>, <strong>FastAPI</strong>, <strong>Groq LLMs</strong>, and live travel data APIs. Describe your trip in plain English and receive complete, verified itineraries with flights, Indian Railways train schedules, hotels, live weather forecasts, and cost breakdowns in about a minute.
 </p>
 
 ## 📝 Table of Contents
 
-- [About](#about)
-- [Getting Started](#getting_started)
-- [Usage](#usage)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [Authors](#authors)
-- [Acknowledgements](#acknowledgement)
+- [About The Project](#about)
+- [Architecture & Multi-Agent Flow](#architecture)
+- [Key Features & Enhancements](#key-features)
+- [Getting Started](#getting-started)
+- [Environment Variables](#environment-variables)
+- [Usage & Follow-Up Conversations](#usage)
+- [License](#license)
 
-## 🧐 About <a name = "about"></a>
+---
 
-Planning a trip usually means juggling half a dozen browser tabs — one for flights, another for hotels, a third for the weather, and a notes app where you try to fit it all into a sensible order. TravelBrain collapses that into a single conversation. You describe the trip you want in your own words, the way you'd describe it to a friend — *"Plan a 10 day Europe trip from India in April, mid-range budget"* — and a team of AI specialists goes and researches it. One looks into flights, another finds places to stay, another checks what the weather will be doing while you're there. Their findings are then pulled together into a single plan you can actually act on, complete with a day-by-day schedule and a cost estimate. The result is a trip plan in about a minute, rather than an afternoon of research. Each part of the trip gets its own attention:
+## 🧐 About The Project <a name="about"></a>
 
-| | |
+Planning travel traditionally requires juggling multiple browser tabs for flights, train tickets, hotel bookings, weather forecasts, and budgeting. 
+
+**NaviGo AI** collapses all of that research into a single conversational interface powered by a team of autonomous AI specialists working in parallel:
+
+| Specialist Agent | What It Researches |
 |---|---|
-| ✈️ **Flights** | Likely airports, airlines on the route, typical duration and fare range |
-| 🏨 **Hotels** | Accommodation options matched to your destination and budget |
-| 🌤️ **Weather** | Current conditions and the forecast, with travel advice |
-| 🗺️ **Itinerary** | A realistic day-by-day plan you can actually follow |
-| 💰 **Budget** | An estimated breakdown of what the trip will cost |
+| ✈️ **Flight Agent** | Airport IATA codes, airlines, typical flight durations, and airfare estimates |
+| 🚆 **Train Agent** | Live IRCTC Indian Railways routes, Vande Bharat/Rajdhani schedules, station codes (e.g. NDLS, BSB, MAO), class recommendations (1A, 2A, 3A, SL, EC, CC), and booking advice |
+| 🏨 **Hotel Agent** | Destination-matched hotel accommodations, price tiers, and location convenience |
+| 🌤️ **Weather Agent** | Live temperature, humidity, wind conditions, multi-day forecasts, and travel advice |
+| 🗺️ **Itinerary Agent** | Day-by-day practical schedule integrating flights, trains, and local activities |
+| 💰 **Final Synthesizer** | Assembles everything into a clean Markdown plan with itemized budget breakdowns |
 
-Plans are saved as you go, so you can reopen a trip later and ask follow-up
-questions without starting over.
+---
 
-## 🏁 Getting Started <a name = "getting_started"></a>
+## 🏗️ Architecture & Multi-Agent Flow <a name="architecture"></a>
 
-These instructions will get you a copy of the project up and running on your
-local machine.
+NaviGo is engineered using **LangGraph** graph state orchestration:
+
+```
+[START]
+   │
+   ▼
+[Flight Agent] ──── (AviationStack API)
+   │
+   ▼
+[Train Agent]  ──── (RapidAPI IRCTC Live API + Verified Fallback)
+   │
+   ▼
+[Hotel Agent]  ──── (Tavily Search Engine)
+   │
+   ▼
+[Weather Agent] ─── (OpenWeather API)
+   │
+   ▼
+[Itinerary Agent] ── (Multi-Turn Plan Synthesis)
+   │
+   ▼
+[Final Agent]   ──── (Markdown Formatter & Budget Estimator)
+   │
+   ▼
+ [END]  ───────► Saved to Supabase PostgreSQL Checkpointer
+```
+
+---
+
+## ✨ Key Features & Enhancements <a name="key-features"></a>
+
+### 🚆 1. Indian Railways & Live IRCTC Integration (`train_agent.py`)
+- Integrated **RapidAPI IRCTC client** (`irctc1.p.rapidapi.com`) to query live train numbers, exact departure/arrival times, durations, and run days for Indian intercity rail routes.
+- **Anti-Hallucination Safeguards**: Enforces strict grounding rules so train numbers and schedules match active IRCTC records.
+- **Rate-Limit Resilience & Verified Fallback**: Includes LRU caching and an offline dataset for popular routes (`NDLS <-> BSB`, `MMCT <-> MAO`, etc.) if API rate limits (HTTP 429) occur.
+
+### 💬 2. Multi-Turn Conversation Context Window & Chat Memory
+- **Thread State Persistence**: Utilizes Supabase PostgreSQL checkpointer (`PostgresSaver`) with `MemorySaver` fallback to retain conversation threads.
+- **Context Window Engine**: `format_chat_history` extracts recent turns (`HumanMessage` and `AIMessage`) and passes chat context to all specialist nodes.
+- **Context-Aware Follow-Ups**: Allows users to refine existing plans (e.g., *"Switch hotel to 5-star luxury"* or *"Show train options for this route"*) without re-typing origin, destination, or travel dates.
+
+### ⚡ 3. Rate Limit & Token Budget Optimization
+- Implemented payload trimming (`_trim()`) across agent prompt inputs to respect token-per-minute (TPM) limits on Groq free-tier inference (`openai/gpt-oss-20b`).
+
+---
+
+## 🏁 Getting Started <a name="getting-started"></a>
 
 ### Prerequisites
 
-You'll need the following before you start:
+- **Python 3.11+**
+- **[uv](https://docs.astral.sh/uv/)** package manager
+- **PostgreSQL Database** (e.g., free instance on Supabase, Render, or Neon)
+- **API Keys**: Groq, Tavily, AviationStack, OpenWeather, and RapidAPI (IRCTC)
 
-- **Python 3.11**
-- **[uv](https://docs.astral.sh/uv/)** — used to install dependencies
-- **A PostgreSQL database** — a free [Render](https://render.com/) instance works fine
-- **API keys** from the services below. All of them have free tiers:
-  - [Groq](https://console.groq.com/)
-  - [Tavily](https://tavily.com/)
-  - [AviationStack](https://aviationstack.com/)
-  - [OpenWeather](https://openweathermap.org/api)
+### Installation
 
-### Installing
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner.git
+   cd TravelBrain-Multi-Agent-AI-Travel-Planner
+   ```
 
-Clone the repository and move into it:
+2. Install dependencies using `uv`:
+   ```bash
+   uv sync
+   ```
 
-```bash
-git clone https://github.com/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner.git
-cd TravelBrain-Multi-Agent-AI-Travel-Planner
-```
+3. Create a `.env` file in the project root:
+   ```dotenv
+   # LLM Provider
+   GROQ_API_KEY=gsk_your_groq_key_here
+   GROQ_MODEL=openai/gpt-oss-20b
 
-Install the dependencies:
+   # PostgreSQL Persistence (Supabase / Render)
+   DATABASE_URL=postgresql://postgres.ref:password@db.ref.supabase.co:5432/postgres?sslmode=require
 
-```bash
-uv sync
-```
+   # Travel & Search APIs
+   TAVILY_API_KEY=tvly-your_tavily_key
+   AVIATIONSTACK_API_KEY=your_aviationstack_key
+   OPENWEATHER_API_KEY=your_openweather_key
+   RAPIDAPI_KEY=your_rapidapi_irctc_key
 
-Create a file named `.env` in the project root and add your keys:
+   # Server Settings
+   HOST=127.0.0.1
+   PORT=8000
+   RELOAD=true
+   ```
 
-```dotenv
-# Required
-GROQ_API_KEY=your_groq_key
-DATABASE_URL=postgresql://user:password@host:5432/dbname
+4. Start the application:
+   ```bash
+   uv run python app.py
+   ```
 
-# Service keys
-TAVILY_API_KEY=your_tavily_key
-AVIATIONSTACK_API_KEY=your_aviationstack_key
-OPENWEATHER_API_KEY=your_openweather_key
+5. Open **`http://127.0.0.1:8000`** in your browser.
 
-# Optional
-GROQ_MODEL=openai/gpt-oss-20b
-```
+---
 
-Here's what each one is for:
+## 🔑 Environment Variables <a name="environment-variables"></a>
 
-| Variable | Required | What it's for |
+| Variable | Required | Purpose |
 |---|:---:|---|
-| `GROQ_API_KEY` | ✅ | Powers the AI planning |
-| `DATABASE_URL` | ✅ | Saves your trips so you can return to them |
-| `TAVILY_API_KEY` | ✅ | Hotel search |
-| `AVIATIONSTACK_API_KEY` | ✅ | Airport and airline information |
-| `OPENWEATHER_API_KEY` | ✅ | Weather and forecasts |
-| `GROQ_MODEL` | ❌ | Switch the AI model without editing any code |
+| `GROQ_API_KEY` | ✅ | Fast AI inference for agent node decision-making |
+| `DATABASE_URL` | ✅ | Supabase / PostgreSQL checkpointer for thread history persistence |
+| `TAVILY_API_KEY` | ✅ | Web search engine for live hotel research |
+| `AVIATIONSTACK_API_KEY` | ✅ | Flight information and airport code resolution |
+| `OPENWEATHER_API_KEY` | ✅ | Real-time weather data & multi-day forecasts |
+| `RAPIDAPI_KEY` | ✅ | Live IRCTC Indian Railways train search & station code lookup |
+| `GROQ_MODEL` | ❌ | Model selection (default: `openai/gpt-oss-20b`) |
 
-Your `.env` file is ignored by Git. Never commit real keys.
-
-Now start the app:
-
-```bash
-uv run python app.py
-```
-
-Open **<http://127.0.0.1:8000>** in your browser. If you see the planner with a
-green *API connected* dot at the bottom of the sidebar, you're ready to go.
+---
 
 ## 🎈 Usage <a name="usage"></a>
 
-### Planning a trip
+### Planning a New Trip
+Enter your request into the chat box or use the **Trip Builder**:
+> *"Plan a 5 day trip from Delhi to Varanasi by Vande Bharat train or flight, with mid-range hotels and an itinerary."*
 
-Type your request into the box at the bottom of the screen and press **Enter**.
-Anything conversational works:
+### Multi-Turn Follow-Up Conversations
+Once a plan is generated, ask follow-up questions within the same thread:
+> *"Can you switch the accommodation to 5-star luxury hotels and update the estimated budget?"*
+> *"What are the best local dishes to try in Varanasi?"*
 
-> Plan a 10 day Europe trip from India in April, mid-range budget
-
-> I want a relaxed 5 day trip to Rome and Florence in September for two people
-
-Not sure where to start? Click one of the suggestion cards on the home screen.
-
-A plan takes **30–90 seconds** to build, and you'll see each stage as it
-progresses.
-
-### Using the trip builder
-
-If you'd rather fill in fields than write a sentence, click the **sliders icon**
-to the left of the message box. Enter your origin, destination, dates, duration,
-number of travellers and budget, pick the things you're interested in, then hit
-**Write my prompt**. Your request is composed for you, ready to send or edit.
-
-### Reading your plan
-
-Your results are split into tabs so you can jump straight to what you need:
-
-**Plan** · **Itinerary** · **Flights** · **Hotels** · **Weather**
-
-### Saving, exporting and revisiting
-
-- Every trip is saved to the sidebar automatically — click any one to reopen it
-- Ask follow-up questions on an open trip and it remembers the context
-- Use the icons at the top of a result to **copy**, **download as Markdown** or **print**
-- Click **New trip** to start fresh
-- Switch between **light and dark mode** with the sun/moon icon at the bottom of the sidebar
-
-## 🤔 Troubleshooting <a name = "troubleshooting"></a>
-
-<details>
-<summary><b>The page loads but planning fails</b></summary>
-
-Check the status indicator at the bottom of the sidebar. If it says *API
-unreachable*, the app has stopped — restart it with `uv run python app.py`.
-Otherwise, check the terminal you started the app in for the error.
-</details>
-
-<details>
-<summary><b>An error says the model does not exist</b></summary>
-
-AI providers retire models over time. List the ones your key can use:
-
-```bash
-curl -s https://api.groq.com/openai/v1/models \
-  -H "Authorization: Bearer $GROQ_API_KEY"
-```
-
-Pick one from the list and set it as `GROQ_MODEL` in your `.env` file.
-</details>
-
-<details>
-<summary><b>An error says DATABASE_URL is missing</b></summary>
-
-The app needs a PostgreSQL database to save your trips. Add a connection string
-to your `.env` file — see [Installing](#getting_started).
-</details>
-
-<details>
-<summary><b>Plans take a long time</b></summary>
-
-This is expected. Several specialists research your trip in turn, and each step
-involves live data and AI calls. 30–90 seconds is normal.
-</details>
-
-## 🤝 Contributing <a name = "contributing"></a>
-
-Contributions are welcome. This project is actively being developed, so there's
-plenty to pick up.
-
-### Getting set up
-
-1. **Fork** the repository and clone your fork
-2. Follow [Getting Started](#getting_started) to install everything
-3. Create a branch for your work:
-
-```bash
-git checkout -b feature/your-feature-name
-```
-
-### Making your changes
-
-- Keep each pull request focused on one thing
-- Match the style of the code around you
-- Check the app still runs end to end before you open a pull request
-- Never commit your `.env` file or any API keys
-
-### Submitting your work
-
-Commit with a message that says what changed and why:
-
-```bash
-git commit -m "Add support for multi-city trips"
-```
-
-Push to your fork:
-
-```bash
-git push origin feature/your-feature-name
-```
-
-Then open a **pull request** against `main` describing what you changed, why,
-and how you tested it.
-
-### Reporting bugs and suggesting ideas
-
-Open an [issue](https://github.com/KalyanM45/TravelBrain-Multi-Agent-AI-Travel-Planner/issues).
-For bugs, include what you did, what you expected, what happened instead, and
-any error output from the terminal.
-
-## 🎉 Acknowledgements <a name = "acknowledgement"></a>
-
-- [Groq](https://groq.com/) for fast AI inference
-- [Tavily](https://tavily.com/), [AviationStack](https://aviationstack.com/) and
-  [OpenWeather](https://openweathermap.org/) for the live travel data
+The agent retains the full conversation context window and updates your itinerary accordingly.
 
 ---
+
+## 📄 License <a name="license"></a>
 
 Licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE).

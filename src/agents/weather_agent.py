@@ -6,11 +6,12 @@ from src.agents.prompts import WEATHER_RESULTS_TEMPLATE
 from src.graph.state import TravelState
 from src.agents.destination import extract_destination
 from src.mcp_servers.local import forecast_mcp_search, weather_mcp_search
-from src.utils.async_utils import run_async
+from src.utils.async_utils import format_chat_history, run_async
 
 
 def weather_agent(state: TravelState):
-    city = extract_destination(state["user_query"])
+    chat_hist = format_chat_history(state.get("messages", []))
+    city = extract_destination(state["user_query"], chat_history=chat_hist)
 
     weather_data = run_async(weather_mcp_search(city))
     forecast_data = run_async(forecast_mcp_search(city))

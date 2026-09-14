@@ -10,6 +10,7 @@ class TravelState(TypedDict):
     messages: Annotated[list[AnyMessage], operator.add]
     user_query: str
     flight_results: str
+    train_results: str
     hotel_results: str
     itinerary: str
     llm_calls: int
@@ -25,6 +26,7 @@ def initial_state(user_query: str) -> TravelState:
         "messages": [HumanMessage(content=user_query)],
         "user_query": user_query,
         "flight_results": "",
+        "train_results": "",
         "hotel_results": "",
         "weather_results": "",
         "itinerary": "",

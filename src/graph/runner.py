@@ -32,6 +32,7 @@ def run_travel_agent(user_input: str, thread_id: str | None = None) -> dict:
         "thread_id": thread_id,
         "answer": final_answer,
         "flight_results": result.get("flight_results", ""),
+        "train_results": result.get("train_results", ""),
         "hotel_results": result.get("hotel_results", ""),
         "weather_results": result.get("weather_results", ""),
         "itinerary": result.get("itinerary", ""),

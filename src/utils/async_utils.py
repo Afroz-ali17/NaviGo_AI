@@ -27,3 +27,21 @@ def truncate(value: Any, limit: int) -> str:
     """Stringify a tool payload and clip it so prompts stay within budget."""
 
     return str(value)[:limit]
+
+
+def format_chat_history(messages: list, max_messages: int = 6) -> str:
+    """Format recent human and AI messages into a text summary for context window."""
+    if not messages:
+        return "No previous chat history."
+
+    history_lines = []
+    for msg in messages:
+        sender = getattr(msg, "type", None) or msg.__class__.__name__
+        content = getattr(msg, "content", "")
+        if content and sender in ("human", "ai", "HumanMessage", "AIMessage"):
+            role = "User" if sender in ("human", "HumanMessage") else "Assistant"
+            text_snippet = str(content)[:250].replace("\n", " ")
+            history_lines.append(f"{role}: {text_snippet}")
+
+    recent = history_lines[-max_messages:]
+    return "\n".join(recent) if recent else "No previous chat history."

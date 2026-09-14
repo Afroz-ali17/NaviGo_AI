@@ -1,5 +1,5 @@
 /* ============================================================
-   TravelBrain AI — frontend
+   NaviGo AI — frontend
    Talks to:  POST   /api/travel  { message, thread_id }
               GET    /api/config          credential status
               POST   /api/config          set session keys
@@ -39,7 +39,7 @@
 
   /* ---------------- state ---------------- */
 
-  var THEME_KEY = "travelbrain.theme";
+  var THEME_KEY = "navigo.theme";
 
   var threadId = null;   // LangGraph conversation thread for the current trip
   var busy = false;
@@ -50,11 +50,12 @@
      weights are an estimate of how long each stage takes - the label is
      indicative, not a live event feed. */
   var PHASES = [
-    { label: "Fetching flights data",    weight: 0.22 },
-    { label: "Searching hotels",         weight: 0.18 },
-    { label: "Checking the weather",     weight: 0.14 },
-    { label: "Building your itinerary",  weight: 0.23 },
-    { label: "Writing your final plan",  weight: 0.23 }
+    { label: "Fetching flights data",                weight: 0.18 },
+    { label: "Searching train options (IRCTC / Rail)", weight: 0.18 },
+    { label: "Searching hotels",                     weight: 0.18 },
+    { label: "Checking the weather",                 weight: 0.14 },
+    { label: "Building your itinerary",              weight: 0.16 },
+    { label: "Writing your final plan",              weight: 0.16 }
   ];
 
   var ESTIMATED_MS = 55000;
@@ -446,7 +447,7 @@
     head.appendChild(avatar);
 
     var titleBox = el("div", "card-title");
-    titleBox.appendChild(el("strong", null, "TravelBrain AI"));
+    titleBox.appendChild(el("strong", null, "NaviGo AI"));
     titleBox.appendChild(el("small", null, "Plan ready"));
     head.appendChild(titleBox);
 
@@ -469,7 +470,7 @@
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
-      a.download = "travelbrain-plan.md";
+      a.download = "navigo-plan.md";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

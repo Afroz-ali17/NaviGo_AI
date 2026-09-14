@@ -36,6 +36,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 AVIATIONSTACK_API_KEY = os.getenv("AVIATIONSTACK_API_KEY")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 
 # =========================

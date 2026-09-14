@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TravelBrain AI — Multi-Agent Travel Planner</title>
-  <meta name="description" content="A LangGraph multi-agent system that plans flights, hotels, weather and day-by-day itineraries." />
+  <title>NaviGo AI — Multi-Agent Travel Planner</title>
+  <meta name="description" content="A LangGraph multi-agent system that plans flights, trains, hotels, weather and day-by-day itineraries." />
   <link rel="stylesheet" href="/static/css/styles.css" />
 </head>
 <body>
@@ -28,7 +28,7 @@
             </svg>
           </span>
           <span class="brand-text">
-            <strong>TravelBrain</strong>
+            <strong>NaviGo</strong>
             <em>AI</em>
           </span>
         </a>
@@ -93,6 +93,13 @@
           </p>
 
           <div class="suggestions" id="suggestions">
+            <button class="suggestion" type="button" data-prompt="Plan a 5 day trip from Delhi to Varanasi by Vande Bharat train or flight, with mid-range hotels, weather and day-by-day itinerary.">
+              <span class="suggestion-emoji">🚆</span>
+              <span class="suggestion-body">
+                <strong>Delhi to Varanasi Rail</strong>
+                <small>5 days · Vande Bharat &amp; IRCTC</small>
+              </span>
+            </button>
             <button class="suggestion" type="button" data-prompt="Plan a 7 day Japan trip from Dhaka in April with a mid-range budget, focused on food and temples.">
               <span class="suggestion-emoji">🇯🇵</span>
               <span class="suggestion-body">

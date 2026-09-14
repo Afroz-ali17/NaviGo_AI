@@ -37,7 +37,7 @@ BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI(
-    title="TravelBrain AI",
+    title="NaviGo AI",
     description="LangGraph Multi-Agent Travel Planner with FastAPI Frontend",
     version="1.0.0"
 )
@@ -211,6 +211,7 @@ async def travel_planner(request: Request, request_data: TravelRequest):
                 "thread_id": result["thread_id"],
                 "answer": result["answer"],
                 "flight_results": result["flight_results"],
+                "train_results": result.get("train_results", ""),
                 "hotel_results": result["hotel_results"],
                 "weather_results": result.get("weather_results", ""),
                 "itinerary": result["itinerary"],
