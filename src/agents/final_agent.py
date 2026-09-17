@@ -20,12 +20,12 @@ def final_agent(state: TravelState):
 
     prompt = FINAL_AGENT_PROMPT.format(
         chat_history=chat_hist,
-        user_query=state["user_query"],
+        user_query=state.get("user_query", ""),
         flight_results=_trim(state.get("flight_results"), 1200),
         train_results=_trim(state.get("train_results"), 1200),
         hotel_results=_trim(state.get("hotel_results"), 1200),
         weather_results=_trim(state.get("weather_results"), 800),
-        itinerary=_trim(state.get("itinerary"), max_chars=2000),
+        itinerary=_trim(state.get("itinerary"), 2000),
     )
 
     response = get_llm().invoke([
