@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: navigo-ai
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: main
+    healthCheckPath: /health
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: AVIATIONSTACK_API_KEY
+        sync: false
+      - key: RAPIDAPI_KEY
+        sync: false
+      - key: CACHE_ENABLED
+        value: "false"
