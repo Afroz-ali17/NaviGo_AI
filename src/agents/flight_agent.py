@@ -14,16 +14,11 @@ from src.utils.async_utils import bump_llm_calls, run_async, truncate
 
 
 def flight_agent(state: TravelState):
-    print("\nINSIDE FLIGHT AGENT\n")
-
     query = state["user_query"]
 
     try:
         airports = run_async(aviation_mcp_call("list_airports"))
         airlines = run_async(aviation_mcp_call("list_airlines"))
-
-        print("\nAIRPORTS:", airports)
-        print("\nAIRLINES:", airlines)
 
         prompt = FLIGHT_AGENT_PROMPT.format(
             query=query,

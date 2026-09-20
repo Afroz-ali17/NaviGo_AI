@@ -1,9 +1,20 @@
 import os
+import sys
+
+# Ensure UTF-8 everywhere on Windows
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from pathlib import Path
 import traceback
 import uvicorn
 
 from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,6 +52,18 @@ app = FastAPI(
     description="LangGraph Multi-Agent Travel Planner with FastAPI Frontend",
     version="1.0.0"
 )
+
+
+# Global exception handler — ensures every crash returns JSON, not raw text
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": str(exc)},
+    )
+
+
+import asyncio
 
 
 # Only needed when the browser talks to this API on a different origin. With
@@ -199,25 +222,28 @@ async def travel_planner(request: Request, request_data: TravelRequest):
                 }
             )
 
-        with use_credentials(credentials):
-            result = run_travel_agent(
-                user_input=user_message,
-                thread_id=request_data.thread_id
-            )
+        def _run_agent():
+            with use_credentials(credentials):
+                return run_travel_agent(
+                    user_input=user_message,
+                    thread_id=request_data.thread_id,
+                )
 
-        return JSONResponse(
-            content={
-                "success": True,
-                "thread_id": result["thread_id"],
-                "answer": result["answer"],
-                "flight_results": result["flight_results"],
-                "train_results": result.get("train_results", ""),
-                "hotel_results": result["hotel_results"],
-                "weather_results": result.get("weather_results", ""),
-                "itinerary": result["itinerary"],
-                "llm_calls": result["llm_calls"],
-            }
-        )
+        result = await asyncio.to_thread(_run_agent)
+
+        payload = jsonable_encoder({
+            "success": True,
+            "thread_id": result.get("thread_id", ""),
+            "answer": str(result.get("answer", "")),
+            "flight_results": result.get("flight_results", ""),
+            "train_results": result.get("train_results", ""),
+            "hotel_results": result.get("hotel_results", ""),
+            "weather_results": result.get("weather_results", ""),
+            "itinerary": result.get("itinerary", ""),
+            "llm_calls": result.get("llm_calls", 0),
+        })
+
+        return JSONResponse(content=payload)
 
     except MissingCredentialsError as e:
         # The frontend turns this into a prompt to open Settings.
@@ -231,14 +257,16 @@ async def travel_planner(request: Request, request_data: TravelRequest):
         )
 
     except Exception as e:
-        print("ERROR:", e)
-        traceback.print_exc()
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass  # encoding errors on Windows cp1252
 
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "error": str(e)
+                "error": str(e),
             }
         )
 

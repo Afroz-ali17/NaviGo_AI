@@ -26,7 +26,8 @@ def run_travel_agent(user_input: str, thread_id: str | None = None) -> dict:
         config=config,
     )
 
-    final_answer = result["messages"][-1].content
+    messages = result.get("messages", [])
+    final_answer = messages[-1].content if messages else "No response was generated. Please try again."
 
     return {
         "thread_id": thread_id,
