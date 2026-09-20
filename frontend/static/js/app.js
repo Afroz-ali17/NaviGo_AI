@@ -437,6 +437,347 @@
     return ["# " + (result.__query || "Trip plan"), "", toText(result.answer)].join("\n");
   }
 
+  /* ---------------- interactive google maps (100% dynamic via API) ---------------- */
+
+  var googleMapsApiKey = null;
+  var googleMapsLoading = false;
+  var googleMapsLoaded = false;
+  var googleMapsCallbacks = [];
+
+  function escapeHtml(str) {
+    var div = document.createElement("div");
+    div.textContent = str || "";
+    return div.innerHTML;
+  }
+
+  function loadGoogleMapsSdk(callback) {
+    if (googleMapsLoaded && window.google && window.google.maps) {
+      if (callback) callback();
+      return;
+    }
+    if (callback) googleMapsCallbacks.push(callback);
+    if (googleMapsLoading) return;
+    googleMapsLoading = true;
+
+    fetch("/api/maps/config")
+      .then(function (r) { return r.json(); })
+      .then(function (cfg) {
+        if (!cfg || !cfg.enabled || !cfg.api_key) {
+          googleMapsLoading = false;
+          return;
+        }
+        googleMapsApiKey = cfg.api_key;
+        var script = document.createElement("script");
+        script.src = "https://maps.googleapis.com/maps/api/js?key=" + encodeURIComponent(googleMapsApiKey) + "&libraries=places";
+        script.async = true;
+        script.defer = true;
+        script.onload = function () {
+          googleMapsLoaded = true;
+          googleMapsLoading = false;
+          while (googleMapsCallbacks.length) {
+            var cb = googleMapsCallbacks.shift();
+            try { cb(); } catch (e) { console.error("Maps callback error", e); }
+          }
+        };
+        script.onerror = function () {
+          googleMapsLoading = false;
+          console.warn("Could not load Google Maps SDK script");
+        };
+        document.head.appendChild(script);
+      })
+      .catch(function (e) {
+        googleMapsLoading = false;
+        console.warn("Failed to fetch /api/maps/config", e);
+      });
+  }
+
+  // Preload Google Maps SDK on startup
+  loadGoogleMapsSdk();
+
+  function extractTripPlaces(result) {
+    var destination = "";
+    var places = [];
+    var seen = new Set();
+
+    // 1. Extract destination city dynamically (no hardcoded cities)
+    if (result.weather_results) {
+      var cityMatch = String(result.weather_results).match(/"city":\s*"([^"]+)"/i);
+      if (cityMatch && cityMatch[1]) {
+        destination = cityMatch[1].trim();
+      }
+    }
+
+    if (!destination && result.__query) {
+      var toMatch = result.__query.match(/\bto\s+([A-Z][a-zA-Z\s]+?)(?:\s+from|\s+in|\s+with|\s+for|\s+on|,|\.|$)/i);
+      if (toMatch && toMatch[1]) {
+        destination = toMatch[1].trim();
+      } else {
+        var tripMatch = result.__query.match(/trip\s+to\s+([A-Z][a-zA-Z\s]+?)(?:\s+from|\s+in|\s+with|\s+for|\s+on|,|\.|$)/i);
+        if (tripMatch && tripMatch[1]) destination = tripMatch[1].trim();
+      }
+    }
+
+    if (!destination && result.itinerary) {
+      var itinCityMatch = String(result.itinerary).match(/([A-Z][a-zA-Z\s]+?)\s+(?:Adventure|Itinerary|Trip|Getaway)/i);
+      if (itinCityMatch && itinCityMatch[1]) destination = itinCityMatch[1].trim();
+    }
+
+    // 2. Extract hotels dynamically from hotel_results & markdown answer
+    var hotelRegexes = [
+      /\*\*(?:Hotel|Hostel|Resort|The\s+Local|Villa|Suites)\s+([^*]+?)\*\*/gi,
+      /\*\*([^*]+?(?:Hotel|Hostel|Resort|Suites|Palace\s+Hotel))\*\*/gi
+    ];
+    for (var hr of hotelRegexes) {
+      var bHotels = String(result.answer || "").matchAll(hr);
+      for (var bh of bHotels) {
+        var hName = (bh[1] || bh[0] || "").replace(/\*\*/g, "").trim();
+        if (hName && hName.length > 3 && hName.length < 45 && !seen.has(hName.toLowerCase()) && places.length < 10) {
+          seen.add(hName.toLowerCase());
+          places.push({ name: hName, category: "hotel", label: "Hotel / Stay" });
+        }
+      }
+    }
+
+    if (result.hotel_results) {
+      var rawHotels = String(result.hotel_results).matchAll(/(?:Hotel|Hostel|Resort|Suites|Inn)\s+([A-Za-z0-9\s\-&']{3,35})/gi);
+      for (var rh of rawHotels) {
+        var rName = (rh[0] || "").replace(/\\n|"/g, "").trim();
+        if (rName && rName.length > 3 && !seen.has(rName.toLowerCase()) && places.length < 10) {
+          seen.add(rName.toLowerCase());
+          places.push({ name: rName, category: "hotel", label: "Hotel / Stay" });
+        }
+      }
+    }
+
+    // 3. Extract Sightseeing & Activities from Day-by-Day Itinerary dynamically
+    var sightPatterns = [
+      /\b(?:visit|explore|tour|see|stroll through)\s+([A-Z][a-zA-Z0-9\s\-&']{3,32}?)(?:\s*\(|\s*,|\s*\.|\s*—|\s*–|\s*\||\s*→|\s*<|\s*\n)/gi,
+      /\b([A-Z][a-zA-Z\s]{2,28}?(?:Museum|Tower|Fort|Palace|Temple|Park|Gardens|Market|Mosque|Cathedral|Basilica|Castle|Colosseum|Shrine|Center|Square|Beach|Monument))\b/g
+    ];
+
+    for (var sp of sightPatterns) {
+      var sMatches = String(result.answer || "").matchAll(sp);
+      for (var sm of sMatches) {
+        var sName = (sm[1] || sm[0] || "").replace(/^to\s+/i, "").trim();
+        if (sName && sName.length > 3 && sName.length < 40 &&
+            !/^(Flight|Morning|Afternoon|Evening|Hotel|Airport|Metro|Train|Railway|Option|Estimated|Total|Notes|Highlights|Schedule|Current|Forecast|Weather|Day\s*\d)/i.test(sName) &&
+            !seen.has(sName.toLowerCase()) && places.length < 15) {
+          seen.add(sName.toLowerCase());
+          places.push({ name: sName, category: "sight", label: "Sight / Landmark" });
+        }
+      }
+    }
+
+    // 4. Extract Transit Hub dynamically
+    var airportMatch = String(result.flight_results || result.answer || "").match(/([A-Z][a-zA-Z\s\-]{3,30}?\s*(?:Airport|International\s*Airport))\s*(?:\(([A-Z]{3})\))?/i);
+    if (airportMatch && airportMatch[1]) {
+      var apName = airportMatch[1].trim();
+      if (!seen.has(apName.toLowerCase())) {
+        seen.add(apName.toLowerCase());
+        places.unshift({ name: apName, category: "transit", label: "Airport / Transit" });
+      }
+    }
+
+    return {
+      destination: destination,
+      places: places
+    };
+  }
+
+  function dynamicGeocode(address, callback) {
+    if (window.google && window.google.maps && window.google.maps.Geocoder) {
+      try {
+        var gCoder = new google.maps.Geocoder();
+        gCoder.geocode({ address: address }, function (results, status) {
+          if (status === "OK" && results && results[0] && results[0].geometry) {
+            var loc = results[0].geometry.location;
+            callback({
+              lat: loc.lat(),
+              lng: loc.lng(),
+              address: results[0].formatted_address || address
+            });
+            return;
+          }
+          fallbackGeocode(address, callback);
+        });
+        return;
+      } catch (e) {
+        fallbackGeocode(address, callback);
+        return;
+      }
+    }
+    fallbackGeocode(address, callback);
+  }
+
+  function fallbackGeocode(address, callback) {
+    fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(address), {
+      headers: { "Accept-Language": "en" }
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data && data.length > 0 && data[0].lat && data[0].lon) {
+          callback({
+            lat: parseFloat(data[0].lat),
+            lng: parseFloat(data[0].lon),
+            address: data[0].display_name
+          });
+        }
+      })
+      .catch(function (err) {
+        console.warn("Geocoding failed for:", address, err);
+      });
+  }
+
+  function renderMapCard(result, parentNode) {
+    if (!googleMapsLoaded || !window.google || !window.google.maps) {
+      loadGoogleMapsSdk(function () {
+        renderMapCard(result, parentNode);
+      });
+      return;
+    }
+
+    var extracted = extractTripPlaces(result);
+    var destination = extracted.destination;
+    var places = extracted.places;
+
+    if (!destination && places.length === 0) {
+      return;
+    }
+
+    var section = el("section", "map-card-section");
+
+    // Card Header
+    var head = el("div", "map-card-header");
+    var title = el("div", "map-card-title");
+    title.innerHTML = '<span>📍</span><strong>Interactive Trip Map</strong>';
+    var badge = el("span", "map-badge", destination ? destination : (places.length + " places"));
+    title.appendChild(badge);
+    head.appendChild(title);
+
+    var actions = el("div", "map-card-actions");
+    var fitBtn = el("button", "btn btn-ghost btn-sm", "Fit All Pins");
+    fitBtn.type = "button";
+    actions.appendChild(fitBtn);
+    head.appendChild(actions);
+    section.appendChild(head);
+
+    // Map container
+    var mapEl = el("div", "map-container");
+    var loadingEl = el("div", "map-loading");
+    loadingEl.innerHTML = '<span class="spinner"></span><span>Connecting to Google Maps API & geocoding locations…</span>';
+    mapEl.appendChild(loadingEl);
+    section.appendChild(mapEl);
+
+    // Chips container
+    var chipsEl = el("div", "map-chips-container");
+    section.appendChild(chipsEl);
+
+    parentNode.appendChild(section);
+
+    // Initialize Google Map via API
+    var bounds = new google.maps.LatLngBounds();
+    var hasValidBounds = false;
+
+    var isDark = document.documentElement.getAttribute("data-theme") === "dark";
+    var darkMapStyle = isDark ? [
+      { elementType: "geometry", stylers: [{ color: "#1e293b" }] },
+      { elementType: "labels.text.stroke", stylers: [{ color: "#0f172a" }] },
+      { elementType: "labels.text.fill", stylers: [{ color: "#94a3b8" }] },
+      { featureType: "road", elementType: "geometry", stylers: [{ color: "#334155" }] },
+      { featureType: "water", elementType: "geometry", stylers: [{ color: "#0f172a" }] },
+      { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#14532d" }] }
+    ] : [];
+
+    var map = new google.maps.Map(mapEl, {
+      zoom: 12,
+      center: { lat: 20.0, lng: 0.0 },
+      styles: darkMapStyle,
+      mapTypeControl: true,
+      mapTypeControlOptions: {
+        style: google.maps.MapTypeControlStyle.DROPDOWN_MENU
+      },
+      streetViewControl: true,
+      fullscreenControl: true
+    });
+
+    var infoWindow = new google.maps.InfoWindow();
+
+    fitBtn.addEventListener("click", function () {
+      if (hasValidBounds) {
+        map.fitBounds(bounds);
+      }
+    });
+
+    var markerIcons = {
+      hotel: "https://maps.google.com/mapfiles/ms/icons/purple-dot.png",
+      sight: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
+      transit: "https://maps.google.com/mapfiles/ms/icons/orange-dot.png"
+    };
+
+    // Geocode destination dynamically using Google Maps API (with dynamic fallback)
+    var queryTarget = destination || (places.length ? places[0].name : "");
+    if (queryTarget) {
+      dynamicGeocode(queryTarget, function (destGeo) {
+        if (loadingEl.parentNode) loadingEl.parentNode.removeChild(loadingEl);
+
+        if (destGeo) {
+          var destLatLng = new google.maps.LatLng(destGeo.lat, destGeo.lng);
+          map.setCenter(destLatLng);
+          map.setZoom(12);
+          bounds.extend(destLatLng);
+          hasValidBounds = true;
+        }
+
+        // Now geocode each place dynamically
+        places.forEach(function (place) {
+          var fullAddress = destination ? (place.name + ", " + destination) : place.name;
+          dynamicGeocode(fullAddress, function (pGeo) {
+            if (pGeo) {
+              var pLatLng = new google.maps.LatLng(pGeo.lat, pGeo.lng);
+              bounds.extend(pLatLng);
+              hasValidBounds = true;
+              map.fitBounds(bounds);
+
+              var marker = new google.maps.Marker({
+                map: map,
+                position: pLatLng,
+                title: place.name,
+                icon: markerIcons[place.category] || markerIcons.sight,
+                animation: google.maps.Animation.DROP
+              });
+
+              var dirUrl = "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(fullAddress);
+              var formattedAddr = pGeo.address || "";
+              var contentHtml = '<div class="map-popup">' +
+                '<span class="popup-cat ' + place.category + '">' + place.label + '</span>' +
+                '<h4>' + escapeHtml(place.name) + '</h4>' +
+                (formattedAddr ? '<p style="font-size:11.5px;color:#94a3b8;margin:2px 0 8px 0;">' + escapeHtml(formattedAddr) + '</p>' : '') +
+                '<a href="' + dirUrl + '" target="_blank" rel="noopener noreferrer">Directions on Google Maps ↗</a>' +
+                '</div>';
+
+              function openThisMarker() {
+                infoWindow.setContent(contentHtml);
+                infoWindow.open(map, marker);
+                map.panTo(pLatLng);
+              }
+
+              marker.addListener("click", openThisMarker);
+
+              // Add quick-jump chip
+              var chip = el("button", "map-place-chip");
+              chip.type = "button";
+              chip.innerHTML = '<span class="chip-dot ' + place.category + '"></span><span>' + escapeHtml(place.name) + '</span>';
+              chip.addEventListener("click", openThisMarker);
+              chipsEl.appendChild(chip);
+            }
+          });
+        });
+      });
+    } else {
+      if (loadingEl.parentNode) loadingEl.parentNode.removeChild(loadingEl);
+    }
+  }
+
   function renderResult(result) {
     var card = el("article", "card");
 
@@ -488,6 +829,7 @@
        weather and itinerary payloads still come back in the response and
        feed this answer, they are just not surfaced as separate tabs. */
     var body = el("div", "card-body");
+    renderMapCard(result, body);
     body.appendChild(mdBlock(result.answer, "The agent returned an empty response."));
     card.appendChild(body);
 

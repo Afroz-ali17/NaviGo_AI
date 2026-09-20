@@ -202,6 +202,18 @@ async def reset_config(request: Request):
         return JSONResponse(content={"success": True, **credential_status()})
 
 
+@app.get("/api/maps/config")
+async def maps_config():
+    """Returns Google Maps API availability and key for the frontend interactive map."""
+    key = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+    return JSONResponse(
+        content={
+            "enabled": bool(key),
+            "api_key": key,
+        }
+    )
+
+
 # =========================
 # Planning
 # =========================
